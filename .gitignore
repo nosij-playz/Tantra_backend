@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+
+# Firebase service account (unsafe to commit)
+techfestadmin-a2e2c-firebase-adminsdk-fbsvc-a2a3aaa0e7.json
+
+# Environment files
+.env
