@@ -19,7 +19,7 @@ app = Flask(__name__)
 
 # Base link to use when constructing absolute URLs for saved DB links.
 # Change this to your deployment base URL when you deploy (e.g. https://example.com)
-curr_link = os.environ.get('CURR_LINK', "http://127.0.0.1:5000")
+curr_link = os.environ.get('CURR_LINK', "https://tantra-vl7d.onrender.com/")
 
 def make_static_url(filename: str) -> str:
     """Return an absolute URL for a file in the static folder using curr_link as base.
@@ -623,3 +623,4 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     # Bind to 0.0.0.0 so Render (or other hosts) can reach the service.
     app.run(host='0.0.0.0', port=port, debug=True)
+
