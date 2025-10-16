@@ -527,17 +527,42 @@ def add_event():
 
 @app.route('/toggle_event_status', methods=['POST'])
 def toggle_event_status():
+    """Toggle event registration status between open (1) and closed (0)."""
     event_id = request.form.get('event_id')
     if not event_id:
-        return redirect(url_for('index'))
-    ev_doc = db.collection('events').document(event_id).get()
-    if not ev_doc.exists:
-        return redirect(url_for('index'))
-    ev = ev_doc.to_dict()
-    current = ev.get('status', 1)
-    new_status = 0 if current == 1 else 1
-    db.collection('events').document(event_id).update({'status': new_status})
-    return redirect(url_for('index'))
+        return jsonify({'error': 'Missing event_id'}), 400
+        
+    try:
+        # Get a reference to the event document
+        event_ref = db.collection('events').document(event_id)
+        event_doc = event_ref.get()
+        
+        if not event_doc.exists:
+            return jsonify({'error': 'Event not found'}), 404
+            
+        # Get current data and new status
+        event_data = event_doc.to_dict()
+        current = event_data.get('status', 1)  # Default to 1 (open) if no status
+        new_status = 0 if current == 1 else 1
+        
+        # Update the status in Firestore
+        event_ref.update({'status': new_status})
+        
+        # Return success response with new status
+        return jsonify({
+            'success': True,
+            'message': 'Event status updated',
+            'status': new_status,
+            'is_open': new_status == 1
+        })
+        
+    except Exception as e:
+        # Log the error and return error response
+        print(f"Error toggling event status: {str(e)}")
+        return jsonify({
+            'error': 'Failed to update event status',
+            'details': str(e)
+        }), 500
 
 
 def _resolve_participant_from_registration(reg_data: dict) -> Dict:
@@ -1017,4 +1042,3 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     # Bind to 0.0.0.0 so Render (or other hosts) can reach the service.
     app.run(host='0.0.0.0', port=port, debug=True)
-
