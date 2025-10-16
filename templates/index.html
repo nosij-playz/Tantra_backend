@@ -23,9 +23,16 @@
             <a href="/add_department" class="btn btn-ghost"><i class="fas fa-building"></i> Add Department</a>
             <a href="/add_event" class="btn btn-primary"><i class="fas fa-plus"></i> Add Event</a>
             <a href="/view_participants" class="btn btn-ghost"><i class="fas fa-users"></i> View Participants</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-ghost"><i class="fas fa-sign-out-alt"></i> Logout</a>
           </div>
         </div>
       </div>
+
+      {% if username %}
+        <div style="margin:12px 0 18px 0;">
+          <strong>Welcome, {{ username }}</strong>
+        </div>
+      {% endif %}
 
       <div class="stats">
         <div class="stat">
@@ -88,6 +95,7 @@
                 <span class="small">{{ 'Open' if e.status == 1 else 'Closed' }}</span>
               </label>
             </div>
+            <div style="margin-top:6px;text-align:right;color:var(--muted);font-size:13px">Participants: <strong>{{ e.participant_count }}</strong></div>
           </div>
         </div>
       </div>

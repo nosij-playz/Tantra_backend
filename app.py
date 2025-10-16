@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, send_file, Response, jsonify
+from flask import Flask, render_template, request, redirect, url_for, send_file, Response, jsonify, session
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
@@ -16,10 +16,77 @@ import openpyxl
 _ = getattr(openpyxl, '__version__', None)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
+
+# -------------------- Auth (CSV) --------------------
+AUTH_CSV = os.path.join(os.path.dirname(__file__), 'auth.csv')
+
+# Note: Removed automatic creation of auth.csv. The app now expects an existing CSV
+# at `AUTH_CSV`. The login flow will attempt to read it and return a helpful
+# error if the file is missing.
+
+
+def load_auth(path: str) -> dict:
+    """Load auth CSV into a dict mapping username -> {password, role, department_id}.
+
+    This function will NOT create the file. If the file does not exist it returns an
+    empty dict so the caller can handle the condition (for example, by showing an error).
+    """
+    auth = {}
+    if not os.path.exists(path):
+        return auth
+    try:
+        with open(path, newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            # expect headers: department_id,username,password,role
+            if reader.fieldnames is None or 'username' not in reader.fieldnames:
+                # fallback: read manually (legacy format)
+                f.seek(0)
+                for row in csv.reader(f):
+                    if not row:
+                        continue
+                    if row[0] == 'username' or row[0] == 'department_id':
+                        continue
+                    # legacy: username,password,role
+                    user = row[0]
+                    pwd = row[1] if len(row) > 1 else ''
+                    role = row[2] if len(row) > 2 else 'department'
+                    auth[user] = {'password': pwd, 'role': role, 'department_id': ''}
+            else:
+                for row in reader:
+                    user = (row.get('username') or '').strip()
+                    if not user:
+                        continue
+                    pwd = (row.get('password') or '').strip()
+                    role = (row.get('role') or 'department').strip()
+                    dept_id = (row.get('department_id') or '').strip()
+                    auth[user] = {'password': pwd, 'role': role, 'department_id': dept_id}
+    except Exception:
+        # On any read error, fallback to empty
+        return {}
+    return auth
+
+
+def authenticate(username: str, password: str) -> dict:
+    """Return auth record if username/password match, else None.
+
+    This function loads the CSV at call time and does not create a file. If the CSV
+    is missing or empty the function returns None.
+    """
+    auth = load_auth(AUTH_CSV)
+    if not auth:
+        # no auth file or failed to read; treat as authentication failure (login will render helpful message)
+        return None
+    rec = auth.get(username)
+    if not rec:
+        return None
+    if rec.get('password') == password:
+        return {'username': username, 'role': rec.get('role', 'department'), 'department_id': rec.get('department_id', '')}
+    return None
 
 # Base link to use when constructing absolute URLs for saved DB links.
 # Change this to your deployment base URL when you deploy (e.g. https://example.com)
-curr_link = os.environ.get('CURR_LINK', "https://tantra-vl7d.onrender.com/")
+curr_link = os.environ.get('CURR_LINK', "http://127.0.0.1:5000")
 
 def make_static_url(filename: str) -> str:
     """Return an absolute URL for a file in the static folder using curr_link as base.
@@ -75,8 +142,146 @@ else:
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# -------------------- Home --------------------
+# -------------------- Login / Home --------------------
+
+
 @app.route('/')
+def root():
+    # initial page should be the login page
+    return redirect(url_for('login'))
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        # ensure auth CSV exists
+        if not os.path.exists(AUTH_CSV):
+            return render_template('login.html', error=f'Authentication configuration missing: {AUTH_CSV}')
+
+        user = authenticate(username, password)
+        if not user:
+            return render_template('login.html', error='Invalid credentials')
+        # set session
+        session['username'] = user['username']
+        session['role'] = user['role']
+        # store department_id when present
+        if user.get('department_id'):
+            session['department_id'] = user.get('department_id')
+        else:
+            session.pop('department_id', None)
+        if user['role'] == 'admin':
+            return redirect(url_for('index'))
+        else:
+            return redirect(url_for('department_dashboard'))
+    return render_template('login.html')
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+@app.route('/department')
+def department_dashboard():
+    # only accessible to department role
+    if session.get('role') != 'department':
+        return redirect(url_for('login'))
+    username = session.get('username')
+    department_id = session.get('department_id', username)
+    # Resolve department name from Firestore. Try collections 'departments' then 'department'.
+    dept_name = None
+    try:
+        doc = db.collection('departments').document(department_id).get()
+        if doc.exists:
+            dept_name = doc.to_dict().get('name')
+        else:
+            # try alternative collection name
+            doc2 = db.collection('department').document(department_id).get()
+            if doc2.exists:
+                dept_name = doc2.to_dict().get('name')
+    except Exception:
+        # ignore Firestore errors and treat as not found
+        dept_name = None
+
+    # If dept_name still not found, fall back to using the department_id as name
+    if not dept_name:
+        dept_name = department_id
+
+    # Gather participants where participant.department == dept_name
+    participants = []
+    try:
+        parts_q = db.collection('participants').where('department', '==', dept_name).stream()
+        for pdoc in parts_q:
+            p = pdoc.to_dict()
+            participants.append({
+                'name': p.get('name', ''),
+                'email': p.get('email', ''),
+                'phone': p.get('phone', ''),
+                'college': p.get('college', ''),
+                'branch': p.get('branch/Class') or p.get('branch') or p.get('Class') or '',
+                'year': p.get('year', ''),
+                'event': p.get('event', ''),
+                'transactionId': p.get('transactionId') or p.get('transaction_id') or ''
+            })
+    except Exception:
+        participants = []
+
+    # Sort participants by name
+    participants = sorted(participants, key=lambda r: (r.get('name') or '').lower())
+
+    total_participants = len(participants)
+
+    # Unique by participant name (case-insensitive)
+    unique_names = set()
+    for p in participants:
+        n = (p.get('name') or '').strip().lower()
+        if n:
+            unique_names.add(n)
+    unique_count = len(unique_names)
+
+    # Per-event counts (from participants)
+    event_counts = {}
+    for p in participants:
+        en = p.get('event') or ''
+        event_counts[en] = event_counts.get(en, 0) + 1
+
+    # Build event list from events collection where department/ dept_id matches department_id
+    events_info = []
+    try:
+        all_events = list(db.collection('events').stream())
+        for edoc in all_events:
+            ev = edoc.to_dict()
+            ev_dept = ev.get('department') or ev.get('dept_id') or ''
+            if ev_dept == department_id:
+                ev_name = ev.get('name') or ''
+                ev_status = ev.get('status', None)
+                ev_count = event_counts.get(ev_name, 0)
+                events_info.append({'id': edoc.id, 'name': ev_name, 'status': ev_status, 'participant_count': ev_count})
+    except Exception:
+        events_info = []
+
+    # Also include events that participants reference but which may not have matching event docs
+    for ename, cnt in event_counts.items():
+        if any(e['name'] == ename for e in events_info):
+            continue
+        if ename:
+            events_info.append({'id': '', 'name': ename, 'status': None, 'participant_count': cnt})
+
+    # Sort events_info by name
+    events_info = sorted(events_info, key=lambda e: (e.get('name') or '').lower())
+
+    return render_template('fordepartement.html', username=username, department_id=department_id,
+                           department_name=dept_name, participants=participants,
+                           total_participants=total_participants, unique_count=unique_count,
+                           per_event_counts=sorted(event_counts.items(), key=lambda x: x[0].lower()),
+                           events_info=events_info)
+
+
+# -------------------- Home --------------------
+@app.route('/index')
 def index():
     # Dashboard summary counts
     # Count departments
@@ -88,6 +293,18 @@ def index():
     # Count events
     events = list(db.collection('events').stream())
     total_events = len(events)
+
+    # Build participant counts per event name (participants store event by name)
+    event_counts_map = {}
+    try:
+        parts_all = list(db.collection('participants').stream())
+        for pdoc in parts_all:
+            p = pdoc.to_dict()
+            ev = (p.get('event') or '').strip()
+            if ev:
+                event_counts_map[ev] = event_counts_map.get(ev, 0) + 1
+    except Exception:
+        event_counts_map = {}
 
     # Count registrations/participants and unique participants
     # Some deployments use a 'registrations' collection; others (your setup) use 'participants'.
@@ -114,7 +331,9 @@ def index():
             # show the department name when known, otherwise show the raw dept id
             'dept_name': dept_map.get(did, (did or '')),
             'date': ed.get('date'),
-            'status': ed.get('status', 1)
+            'status': ed.get('status', 1),
+            # participant count (match by event name)
+            'participant_count': event_counts_map.get(ed.get('name') or '', 0)
         })
 
     # prepare a simple departments list for the dashboard (id, name, logo_url)
@@ -126,7 +345,11 @@ def index():
                            total_registrations=total_registrations,
                            total_unique_participants=total_unique_participants,
                            recent_events=recent_events,
-                           departments=dept_list)
+                           departments=dept_list,
+                           username=session.get('username'))
+
+
+
 
 
 @app.route('/dept_events/<dept_id>', methods=['GET'])
@@ -220,15 +443,23 @@ def add_department():
 @app.route('/add_event', methods=['GET', 'POST'])
 def add_event():
     departments = db.collection('departments').stream()
-    dept_list = [(dept.id, dept.to_dict()['name']) for dept in departments]
+    dept_list = [(dept.id, dept.to_dict().get('name', '')) for dept in departments]
+
+    default_date = '2025-10-24'
 
     if request.method == 'POST':
-        dept_id = request.form['dept_id']
-        name = request.form['name']
-        description = request.form['description']
-        date = request.form['date']
-        time = request.form['time']
-        venue = request.form['venue']
+        dept_id = request.form.get('dept_id')
+        name = request.form.get('name', '')
+        description = request.form.get('description', '')
+        date = request.form.get('date', default_date)
+        time = request.form.get('time', '')
+        venue = request.form.get('venue', '')
+
+        # Additional fields
+        category = request.form.get('category', 'Individual')
+        coordinator = request.form.get('coordinator', '')
+        coordinatorPhone = request.form.get('coordinatorPhone', '')
+        # 'participants' field removed from the form (not stored)
 
         # Event image upload
         event_file = request.files.get('event_image')
@@ -240,14 +471,23 @@ def add_event():
             image_url = make_static_url(f'event_images/{filename}')
 
         # Get department QR and store event in top-level `events` collection
-        dept_doc = db.collection('departments').document(dept_id).get()
-        payment_qr_url = ''
-        if dept_doc.exists:
-            payment_qr_url = dept_doc.to_dict().get('qr_url', '')
+        dept_doc = db.collection('departments').document(dept_id).get() if dept_id else None
+            # No payment_qr_url needed
 
         # status: 1=open, 0=closed
-        status = int(request.form.get('status', '1'))
-        price = request.form.get('price', '')
+        try:
+            status = int(request.form.get('status', '1'))
+        except Exception:
+            status = 1
+
+        price_raw = request.form.get('price', '')
+        try:
+            price = float(price_raw) if price_raw not in (None, '') else 0
+            if isinstance(price, float) and price.is_integer():
+                price = int(price)
+        except Exception:
+            price = price_raw or ''
+
         prize = request.form.get('prize', '')
 
         # Find the highest numeric event id in the collection
@@ -270,15 +510,19 @@ def add_event():
             'date': date,
             'time': time,
             'venue': venue,
+            'image': image_url,
             'image_url': image_url,
-            'payment_qr_url': payment_qr_url,
+            'category': category,
+            'coordinator': coordinator,
+            'coordinatorPhone': coordinatorPhone,
             'price': price,
             'prize': prize,
             'status': status,
             'created_at': datetime.utcnow()
         })
-        return redirect(url_for('index'))
-    return render_template('add_event.html', departments=dept_list)
+        return redirect(url_for('add_event'))
+
+    return render_template('add_event.html', departments=dept_list, default_date=default_date)
 
 
 @app.route('/toggle_event_status', methods=['POST'])
@@ -404,6 +648,85 @@ def view_participants():
                            selected_dept_id=selected_dept_id,
                            selected_event_id=selected_event_id,
                            events_for_select=events_for_select)
+
+
+@app.route('/participants_list', methods=['GET'])
+def participants_list():
+    """Participants listing for a department with optional event filter and sorting.
+
+    Query params:
+      dept_id - department document id (preferred)
+      event - event name to filter participants by
+      sort - 'event' to sort by event, otherwise sort by name
+    """
+    dept_id = request.args.get('dept_id')
+    selected_event = request.args.get('event')
+    sort = request.args.get('sort', '')
+
+    dept_name = None
+    events_for_select = []
+    # resolve department name from dept_id if provided
+    if dept_id:
+        try:
+            ddoc = db.collection('departments').document(dept_id).get()
+            if ddoc.exists:
+                dept_name = ddoc.to_dict().get('name')
+        except Exception:
+            dept_name = None
+
+    # Build event list for this department (by dept id OR by stored department field)
+    try:
+        ev_q = db.collection('events').stream() if not dept_id else db.collection('events').stream()
+        # collect events that match the department id or department field
+        evs = []
+        for ed in db.collection('events').stream():
+            ev = ed.to_dict()
+            ev_dept = ev.get('department') or ev.get('dept_id') or ''
+            if dept_id:
+                if ev_dept == dept_id:
+                    evs.append(ev.get('name'))
+            else:
+                # if no dept_id provided, include all events
+                evs.append(ev.get('name'))
+        # unique and sorted
+        events_for_select = sorted([e for e in set([x for x in evs if x])], key=lambda s: s.lower())
+    except Exception:
+        events_for_select = []
+
+    # load participants filtered by department name (if available) and by selected event (if provided)
+    parts = []
+    try:
+        q = db.collection('participants')
+        if dept_name:
+            q = q.where('department', '==', dept_name)
+        for pdoc in q.stream():
+            p = pdoc.to_dict()
+            pname = p.get('name','')
+            pevent = p.get('event','')
+            # if an event filter is set, apply it
+            if selected_event and (pevent or '').strip() != selected_event:
+                continue
+            parts.append({
+                'name': pname,
+                'email': p.get('email',''),
+                'phone': p.get('phone',''),
+                'college': p.get('college',''),
+                'branch': p.get('branch/Class') or p.get('branch') or p.get('Class') or '',
+                'year': p.get('year',''),
+                'event': pevent,
+                'department': p.get('department','')
+            })
+    except Exception:
+        parts = []
+
+    # sorting
+    if sort == 'event':
+        parts = sorted(parts, key=lambda r: ((r.get('event') or '').lower(), (r.get('name') or '').lower()))
+    else:
+        parts = sorted(parts, key=lambda r: ((r.get('name') or '').lower()))
+
+    return render_template('participants_list.html', participants=parts, dept_name=dept_name, dept_id=dept_id,
+                           events_for_select=events_for_select, selected_event=selected_event, sort=sort)
 
 
 def _gather_participants(dept_id: str, event_id: str = None) -> List[Dict]:
@@ -617,10 +940,80 @@ def fix_events():
 
     return render_template('fix_events.html', events=problematic, departments=dept_list, message=message)
 
+
+@app.route('/repair_events', methods=['GET'])
+def repair_events():
+    """Admin utility: analyze and optionally repair 'events' documents.
+
+    Query params:
+      apply=1  -> apply the safe repairs (otherwise dry-run)
+
+    Repairs performed when apply=1:
+      - ensure document contains numeric 'id' field (derived from numeric doc id if possible)
+      - if 'dept_id' missing but 'department' present and matches a department doc id, set 'dept_id'
+      - ensure 'image' and 'image_url' fields are present when an image_url is available
+
+    Returns a JSON report of findings and applied changes.
+    """
+    apply = request.args.get('apply', '') == '1'
+
+    # load departments map (id -> name)
+    departments = list(db.collection('departments').stream())
+    dept_ids = {d.id for d in departments}
+
+    events = list(db.collection('events').stream())
+    report = {'total_events': len(events), 'problems': [], 'applied': []}
+
+    for e in events:
+        ed = e.to_dict() or {}
+        doc_id = e.id
+        problems = []
+        changes = {}
+
+        # ensure numeric id field
+        if not isinstance(ed.get('id'), int):
+            try:
+                numeric = int(doc_id)
+                changes['id'] = numeric
+                problems.append('missing_or_nonint_id')
+            except Exception:
+                # try to parse from existing id field
+                try:
+                    existing = int(ed.get('id'))
+                    changes['id'] = existing
+                except Exception:
+                    # cannot determine numeric id; skip setting
+                    pass
+
+        # ensure dept_id exists: try 'dept_id' then fallback to 'department'
+        did = ed.get('dept_id') or ed.get('department')
+        if not did or did not in dept_ids:
+            problems.append('missing_or_invalid_dept_id')
+        else:
+            if ed.get('dept_id') != did:
+                changes['dept_id'] = did
+
+        # ensure image fields present
+        if ed.get('image') and not ed.get('image_url'):
+            changes['image_url'] = ed.get('image')
+        if ed.get('image_url') and not ed.get('image'):
+            changes['image'] = ed.get('image_url')
+
+        if problems:
+            report['problems'].append({'doc': doc_id, 'name': ed.get('name'), 'issues': problems, 'proposed_changes': changes})
+
+        if apply and changes:
+            try:
+                db.collection('events').document(doc_id).update(changes)
+                report['applied'].append({'doc': doc_id, 'changes': changes})
+            except Exception as ex:
+                report.setdefault('errors', []).append({'doc': doc_id, 'error': str(ex)})
+
+    return jsonify(report)
+
 # -------------------- Run --------------------
 if __name__ == '__main__':
     # When running locally, allow PORT to be overridden (Render provides $PORT).
     port = int(os.environ.get('PORT', 5000))
     # Bind to 0.0.0.0 so Render (or other hosts) can reach the service.
     app.run(host='0.0.0.0', port=port, debug=True)
-

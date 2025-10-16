@@ -6,6 +6,26 @@
     <title>Add Event - Premium Admin</title>
     <link rel="stylesheet" href="/static/css/admin.css" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+      /* inline toast/alert styles */
+      #alertBox {
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 9999;
+        min-width: 260px;
+        max-width: 90%;
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: #fff;
+        display: none;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+        font-weight: 600;
+      }
+      #alertBox.success { background: #2f9e44; }
+      #alertBox.error { background: #e03131; }
+    </style>
   </head>
   <body>
     <div class="container floating">
@@ -23,7 +43,7 @@
       </div>
 
       <div class="card" style="max-width:800px;margin:0 auto;">
-        <form method="POST" enctype="multipart/form-data">
+  <form id="addEventForm" method="POST" enctype="multipart/form-data">
           <div class="form-group">
             <label><i class="fas fa-building"></i> Select Department</label>
             <select name="dept_id" required>
@@ -45,21 +65,42 @@
           </div>
 
           <div class="form-row">
+  <div class="form-group">
+    <label><i class="fas fa-user-tie"></i> Coordinator</label>
+    <input type="text" name="coordinator" placeholder="Coordinator name" />
+  </div>
+
+  <div class="form-group">
+    <label><i class="fas fa-phone"></i> Coordinator Phone</label>
+    <input type="text" name="coordinatorPhone" placeholder="Coordinator phone" />
+  </div>
+</div>
+
+
+          <div class="form-row">
+            <div class="form-group">
+              <label><i class="fas fa-users"></i> Category</label>
+              <select name="category">
+                <option value="Individual">Individual</option>
+                <option value="Group">Group</option>
+              </select>
+            </div>
             <div class="form-group">
               <label><i class="fas fa-calendar-day"></i> Date</label>
-              <input type="date" name="date" required />
+              <input type="date" name="date" value="{{ default_date }}" required />
             </div>
+          </div>
+
+          <div class="form-row">
             <div class="form-group">
               <label><i class="fas fa-clock"></i> Time</label>
-              <input type="time" name="time" required />
+              <input type="time" name="time" />
+            </div>
+            <div class="form-group">
+              <label><i class="fas fa-map-marker-alt"></i> Venue</label>
+              <input type="text" name="venue" placeholder="Event venue location" />
             </div>
           </div>
-
-          <div class="form-group">
-            <label><i class="fas fa-map-marker-alt"></i> Venue</label>
-            <input type="text" name="venue" placeholder="Event venue location" />
-          </div>
-
           <div class="form-row">
             <div class="form-group">
               <label><i class="fas fa-tag"></i> Price (optional)</label>
@@ -88,10 +129,52 @@
             <a href="/" class="btn btn-ghost"><i class="fas fa-times"></i> Cancel</a>
             <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Add Event</button>
           </div>
-        </form>
+    </form>
+  <div id="alertBox" role="alert" aria-live="polite"></div>
         
         <a href="/" class="back-link"><i class="fas fa-arrow-left"></i> Back to Admin Panel</a>
       </div>
     </div>
-  </body>
-</html>
+      <script>
+        (function(){
+          const form = document.getElementById('addEventForm');
+          const alertBox = document.getElementById('alertBox');
+          function showAlert(message, type='success', timeout=3500){
+            alertBox.textContent = message;
+            alertBox.className = '';
+            alertBox.classList.add(type);
+            alertBox.style.display = 'block';
+            window.clearTimeout(alertBox._hidetimer);
+            alertBox._hidetimer = window.setTimeout(()=>{ alertBox.style.display = 'none'; }, timeout);
+          }
+
+          if(!form) return;
+
+          form.addEventListener('submit', function(e){
+            e.preventDefault();
+            const submitBtn = form.querySelector('button[type="submit"]');
+            if(submitBtn) submitBtn.disabled = true;
+            const url = form.action || window.location.href;
+            const fd = new FormData(form);
+
+            fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
+              .then(response => {
+                if(response.ok) return response.text().then(t => ({ ok: true, text: t }));
+                return response.text().then(t => ({ ok: false, text: t }));
+              })
+              .then(result => {
+                if(result.ok){
+                  showAlert('Event registered successfully — staying on this page.', 'success');
+                  try{ form.reset(); }catch(_){ }
+                } else {
+                  showAlert('Failed to register event. Please try again.', 'error');
+                  console.error('Add event failed:', result.text);
+                }
+              })
+              .catch(err => { console.error('Add event error:', err); showAlert('Network error. Please try again.', 'error'); })
+              .finally(()=>{ if(submitBtn) submitBtn.disabled = false; });
+          });
+        })();
+      </script>
+    </body>
+  </html>
