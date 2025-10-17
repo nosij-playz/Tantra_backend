@@ -97,6 +97,18 @@ def make_static_url(filename: str) -> str:
     path = url_for('static', filename=filename, _external=False)
     return curr_link.rstrip('/') + path
 
+
+def _get_branch(obj: dict) -> str:
+    """Return a branch value from a participant/record dict using multiple possible keys.
+
+    Firestore documents in this project have used different field names for branch
+    over time (e.g. 'branch/Class', 'branch', 'Class', 'branch_name'). This helper
+    centralizes the fallback logic so exports and views consistently include branch.
+    """
+    if not obj:
+        return ''
+    return (obj.get('branch/Class') or obj.get('branch') or obj.get('Class') or obj.get('branch_name') or '')
+
 # -------------------- Upload folders --------------------
 UPLOAD_QR_FOLDER = 'static/qr'
 UPLOAD_EVENT_FOLDER = 'static/event_images'
@@ -184,6 +196,80 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/update_auth')
+def update_auth_page():
+    """Show the auth update page (admin only)."""
+    if session.get('role') != 'admin':
+        return redirect(url_for('login'))
+    
+    try:
+        auth_list = []
+        # Read the current auth CSV
+        if os.path.exists(AUTH_CSV):
+            with open(AUTH_CSV, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    auth_list.append({
+                        'department_id': row.get('department_id', ''),
+                        'username': row.get('username', ''),
+                        'password': row.get('password', ''),
+                        'role': row.get('role', 'department')
+                    })
+        
+        return render_template('update_auth.html', auth_list=auth_list)
+    except Exception as e:
+        return str(e), 500
+
+
+@app.route('/update_auth', methods=['POST'])
+def update_auth():
+    """Update credentials for a department (admin only)."""
+    if session.get('role') != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Invalid request'}), 400
+        
+        department_id = data.get('department_id')
+        new_username = data.get('username', '').strip()
+        new_password = data.get('password', '').strip()
+        
+        if not department_id or not new_username or not new_password:
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        # Read current auth data
+        auth_data = []
+        if os.path.exists(AUTH_CSV):
+            with open(AUTH_CSV, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                auth_data = list(reader)
+        
+        # Update the matching record
+        updated = False
+        for record in auth_data:
+            if record.get('department_id') == department_id:
+                record['username'] = new_username
+                record['password'] = new_password
+                updated = True
+                break
+        
+        if not updated:
+            return jsonify({'error': 'Department not found'}), 404
+        
+        # Write back to CSV
+        with open(AUTH_CSV, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['department_id', 'username', 'password', 'role'])
+            writer.writeheader()
+            writer.writerows(auth_data)
+        
+        return jsonify({'message': 'Credentials updated successfully'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/department')
 def department_dashboard():
     # only accessible to department role
@@ -221,7 +307,7 @@ def department_dashboard():
                 'email': p.get('email', ''),
                 'phone': p.get('phone', ''),
                 'college': p.get('college', ''),
-                'branch': p.get('branch/Class') or p.get('branch') or p.get('Class') or '',
+                'branch': _get_branch(p),
                 'year': p.get('year', ''),
                 'event': p.get('event', ''),
                 'transactionId': p.get('transactionId') or p.get('transaction_id') or ''
@@ -528,6 +614,9 @@ def add_event():
 @app.route('/toggle_event_status', methods=['POST'])
 def toggle_event_status():
     """Toggle event registration status between open (1) and closed (0)."""
+    if 'username' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
     event_id = request.form.get('event_id')
     if not event_id:
         return jsonify({'error': 'Missing event_id'}), 400
@@ -563,6 +652,46 @@ def toggle_event_status():
             'error': 'Failed to update event status',
             'details': str(e)
         }), 500
+
+
+@app.route('/delete_event', methods=['POST'])
+def delete_event():
+    if 'username' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    event_id = request.form.get('event_id')
+    if not event_id:
+        return jsonify({'error': 'Event ID is required'}), 400
+
+    try:
+        # Get the event to check if it exists and get its department
+        event_ref = db.collection('events').document(event_id)
+        event = event_ref.get()
+        
+        if not event.exists:
+            return jsonify({'error': 'Event not found'}), 404
+
+        event_data = event.to_dict()
+        
+        # Check if user has permission to delete this event
+        user_dept = session.get('department_id', '')
+        user_role = session.get('role', '')
+        
+        if user_role != 'admin' and user_dept != event_data.get('dept_id'):
+            return jsonify({'error': 'Unauthorized to delete this event'}), 403
+
+        # Delete the event
+        event_ref.delete()
+        
+        # Also delete any registrations for this event
+        registrations = db.collection('registrations').where('event_id', '==', event_id).stream()
+        for reg in registrations:
+            reg.reference.delete()
+
+        return jsonify({'message': 'Event deleted successfully'})
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 def _resolve_participant_from_registration(reg_data: dict) -> Dict:
@@ -646,7 +775,7 @@ def view_participants():
             'email': p.get('email'),
             'phone': p.get('phone'),
             'college': p.get('college'),
-            'branch': p.get('branch/Class'),
+            'branch': _get_branch(p),
             'year': p.get('year'),
             'event_name': p_event,
             'dept_name': p_dept,
@@ -726,6 +855,7 @@ def participants_list():
             q = q.where('department', '==', dept_name)
         for pdoc in q.stream():
             p = pdoc.to_dict()
+            doc_id = getattr(pdoc, 'id', None)
             pname = p.get('name','')
             pevent = p.get('event','')
             # if an event filter is set, apply it
@@ -736,10 +866,16 @@ def participants_list():
                 'email': p.get('email',''),
                 'phone': p.get('phone',''),
                 'college': p.get('college',''),
-                'branch': p.get('branch/Class') or p.get('branch') or p.get('Class') or '',
+                'branch': _get_branch(p),
                 'year': p.get('year',''),
                 'event': pevent,
-                'department': p.get('department','')
+                'department': p.get('department',''),
+                # include the Firestore document id so we can display it if transaction id is missing
+                'doc_id': doc_id,
+                # robust transaction id lookup (support multiple field names)
+                'transaction_id': (
+                    p.get('transactionId') or p.get('transaction_id') or p.get('txid') or p.get('transaction') or ''
+                )
             })
     except Exception:
         parts = []
@@ -752,6 +888,165 @@ def participants_list():
 
     return render_template('participants_list.html', participants=parts, dept_name=dept_name, dept_id=dept_id,
                            events_for_select=events_for_select, selected_event=selected_event, sort=sort)
+
+
+@app.route('/download_participants')
+def download_participants():
+    """Download participants list in XLSX or PDF format."""
+    if 'username' not in session:
+        return redirect(url_for('login'))
+
+    event_name = request.args.get('event')
+    format_type = request.args.get('format', 'xlsx')
+    dept_id = request.args.get('dept_id')
+
+    # Require either an event or a department filter to avoid exporting the entire database
+    if not event_name and not dept_id:
+        return Response('Please select a department or an event before downloading.', status=400)
+
+    # Allow exporting all events when event_name is not provided
+    participants = []
+    try:
+        # Build query respecting department and event filters
+        q = db.collection('participants')
+        if dept_id:
+            # resolve department name if possible
+            try:
+                ddoc = db.collection('departments').document(dept_id).get()
+                if ddoc.exists:
+                    dept_name = ddoc.to_dict().get('name')
+                else:
+                    dept_name = dept_id
+            except Exception:
+                dept_name = dept_id
+            q = q.where('department', '==', dept_name)
+        if event_name:
+            q = q.where('event', '==', event_name)
+
+        for doc in q.stream():
+            data = doc.to_dict() or {}
+            participants.append({
+                'name': data.get('name', ''),
+                'event': data.get('event', ''),
+                'college': data.get('college', ''),
+                'branch': _get_branch(data),
+                'year': data.get('year', ''),
+                'email': data.get('email', ''),
+                'phone': data.get('phone', ''),
+                # robust transaction id lookup
+                'transaction_id': data.get('transactionId') or data.get('transaction_id') or data.get('txid') or data.get('transaction') or ''
+            })
+    except Exception as e:
+        return str(e), 500
+
+    # Column order should match the page exactly
+    export_headers = ['Name', 'Event', 'College', 'Branch', 'Year', 'Email', 'Phone', 'Transaction ID']
+
+    if format_type == 'xlsx':
+        try:
+            # Create Excel file in memory
+            output = io.BytesIO()
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Participants"
+
+            # Write headers
+            for col, header in enumerate(export_headers, 1):
+                sheet.cell(row=1, column=col, value=header)
+
+            # Write data rows
+            for row_idx, p in enumerate(participants, start=2):
+                row_vals = [
+                    p.get('name', ''),
+                    p.get('event', ''),
+                    p.get('college', ''),
+                    p.get('branch', ''),
+                    p.get('year', ''),
+                    p.get('email', ''),
+                    p.get('phone', ''),
+                    p.get('transaction_id', '')
+                ]
+                for col_idx, val in enumerate(row_vals, start=1):
+                    sheet.cell(row=row_idx, column=col_idx, value=val)
+
+            # Style the headers
+            for cell in sheet[1]:
+                cell.font = openpyxl.styles.Font(bold=True)
+
+            # Auto-adjust column widths
+            for column in sheet.columns:
+                max_length = 0
+                column = list(column)
+                for cell in column:
+                    try:
+                        if cell.value and len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                sheet.column_dimensions[column[0].column_letter].width = adjusted_width
+
+            workbook.save(output)
+            output.seek(0)
+
+            filename = f"{event_name or 'all_events'}_participants.xlsx"
+            return send_file(
+                output,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=filename
+            )
+        except Exception as e:
+            return str(e), 500
+
+    elif format_type == 'pdf':
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER
+
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), title=f"{event_name or 'All Events'} - Participants List")
+
+            # Build table data
+            table_data = [export_headers]
+            for p in participants:
+                row = [
+                    p.get('name', ''),
+                    p.get('event', ''),
+                    p.get('college', ''),
+                    p.get('branch', ''),
+                    p.get('year', ''),
+                    p.get('email', ''),
+                    p.get('phone', ''),
+                    p.get('transaction_id', '')
+                ]
+                table_data.append(row)
+
+            style = TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4a4a4a')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ])
+
+            table = Table(table_data)
+            table.setStyle(style)
+
+            styles = getSampleStyleSheet()
+            heading_style = ParagraphStyle('Heading', parent=styles['Heading1'], alignment=TA_CENTER, spaceAfter=12)
+            heading = Paragraph(f"{event_name or 'All Events'} - Participants List", heading_style)
+
+            doc.build([heading, table])
+            buffer.seek(0)
+            filename = f"{event_name or 'all_events'}_participants.pdf"
+            return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name=filename)
+        except Exception as e:
+            return str(e), 500
+
+    return "Invalid format type", 400
 
 
 def _gather_participants(dept_id: str, event_id: str = None) -> List[Dict]:
@@ -794,7 +1089,7 @@ def _gather_participants(dept_id: str, event_id: str = None) -> List[Dict]:
                 'email': p.get('email'),
                 'phone': p.get('phone'),
                 'college': p.get('college'),
-                'branch': p.get('branch'),
+                'branch': _get_branch(p),
                 'year': p.get('year'),
                 'event_name': ev_data.get('name'),
                 'dept_name': ev_data.get('department') or ev_data.get('dept_id') or '',
@@ -857,7 +1152,7 @@ def export_participants():
             'email': p.get('email', ''),
             'phone': p.get('phone', ''),
             'college': p.get('college', ''),
-            'branch': p.get('branch', ''),
+            'branch': _get_branch(p),
             'year': p.get('year', ''),
             'event_name': p.get('event', ''),
             'dept_name': p.get('department', ''),

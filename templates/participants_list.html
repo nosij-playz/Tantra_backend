@@ -7,6 +7,9 @@
     <link rel="stylesheet" href="/static/css/admin.css" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
+      .btn i {
+        margin-right: 6px;
+      }
       @media (max-width: 1024px) {
         .header {
           flex-direction: column;
@@ -63,6 +66,26 @@
     </style>
   </head>
   <body>
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        // Handle dropdown toggle
+        const dropdown = document.querySelector('.dropdown');
+        if (dropdown) {
+          const menu = dropdown.querySelector('.dropdown-menu');
+          dropdown.addEventListener('click', function(e) {
+            if (e.target.closest('.dropdown-item')) return; // Don't toggle if clicking menu item
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+          });
+
+          // Close dropdown when clicking outside
+          document.addEventListener('click', function(e) {
+            if (!dropdown.contains(e.target)) {
+              menu.style.display = 'none';
+            }
+          });
+        }
+      });
+    </script>
     <div class="container floating">
       <div class="header">
         <div class="brand">
@@ -93,6 +116,30 @@
               </button>
             </form>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              {% if selected_event %}
+                <a href="{{ url_for('download_participants', event=selected_event, dept_id=dept_id, format='xlsx') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                  <i class="fas fa-file-excel"></i> Export XLSX
+                </a>
+                <a href="{{ url_for('download_participants', event=selected_event, dept_id=dept_id, format='pdf') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                  <i class="fas fa-file-pdf"></i> Export PDF
+                </a>
+              {% elif dept_id %}
+                <!-- Export all events for the selected department -->
+                <a href="{{ url_for('download_participants', dept_id=dept_id, format='xlsx') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                  <i class="fas fa-file-excel"></i> Export XLSX
+                </a>
+                <a href="{{ url_for('download_participants', dept_id=dept_id, format='pdf') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                  <i class="fas fa-file-pdf"></i> Export PDF
+                </a>
+              {% else %}
+                <!-- No department or event selected: prevent global export -->
+                <a href="#" onclick="alert('Please select a department or an event to export the participants list.');return false;" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                  <i class="fas fa-file-excel"></i> Export XLSX
+                </a>
+                <a href="#" onclick="alert('Please select a department or an event to export the participants list.');return false;" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                  <i class="fas fa-file-pdf"></i> Export PDF
+                </a>
+              {% endif %}
               <a href="{{ url_for('participants_list', dept_id=dept_id) }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
                 <i class="fas fa-sync-alt"></i>
                 Reset
@@ -128,6 +175,7 @@
                 <th><i class="fas fa-graduation-cap"></i> Year</th>
                 <th><i class="fas fa-envelope"></i> Email</th>
                 <th><i class="fas fa-phone"></i> Phone</th>
+                <th><i class="fas fa-receipt"></i> Transaction ID</th>
               </tr>
             </thead>
             <tbody>
@@ -140,6 +188,7 @@
                 <td>{{ p.year }}</td>
                 <td>{{ p.email }}</td>
                 <td>{{ p.phone }}</td>
+                <td>{{ p.transaction_id or p.transactionId or '' }}</td>
               </tr>
             {% endfor %}
             </tbody>
