@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>View Participants - Premium Admin</title>
 <link rel="stylesheet" href="/static/css/admin.css" />
+<link rel="icon" href="{{ url_for('static', filename='logos/log.png') }}" type="image/png">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
   <div class="container floating">
     <div class="header">
       <div class="brand">
-        <div class="logo pulse"><i class="fas fa-users"></i></div>
-        <div>
+<img src="{{ url_for('static', filename='logos/log.png') }}" alt="Logo" style="width: 40px; height: 40px;">        <div>
           <h1>Tantra Admin</h1>
           <div class="small">Manage registered participants</div>
         </div>
@@ -66,15 +66,21 @@
           </label>
         </div>
       </form>
+      {% endif %}
 
       <div class="toolbar">
         <div class="left">
           <a href="/view_participants?dept_id={{ selected_dept_id }}&event_id={{ selected_event_id }}" class="btn btn-ghost"><i class="fas fa-sync-alt"></i> Refresh</a>
-          <a href="/export_participants?dept_id={{ selected_dept_id }}&event_id={{ selected_event_id }}&format=xlsx" class="btn btn-success"><i class="fas fa-file-excel"></i> Download XLSX</a>
-          <a href="/export_participants?dept_id={{ selected_dept_id }}&event_id={{ selected_event_id }}&format=pdf" class="btn btn-primary"><i class="fas fa-file-pdf"></i> Download PDF</a>
+          {% if participants %}
+          <label style="margin-left:12px; display:inline-flex; align-items:center; gap:8px; font-size:14px;">
+            <input type="checkbox" id="downloadSortByEvent" />
+            <span>Sort downloaded file by Event</span>
+          </label>
+          <button id="serverExportXlsxBtn" class="btn btn-success"><i class="fas fa-file-excel"></i> Download XLSX</button>
+          <button id="serverExportPdfBtn" class="btn btn-primary"><i class="fas fa-file-pdf"></i> Download PDF</button>
+          {% endif %}
         </div>
       </div>
-      {% endif %}
 
       {% if participants %}
       <div class="table-wrap">
@@ -178,6 +184,131 @@
             this.disabled = false;
           }, 2000);
         });
+      });
+    }
+
+    // Helper: collect visible table headers and rows (as arrays of strings)
+    function getVisibleTableData() {
+      const headers = Array.from(document.querySelectorAll('#participantsTable thead th'))
+        .map(th => th.innerText.replace(/[^\w \-]/g, '').trim());
+      const rows = [];
+      document.querySelectorAll('#participantsTable tbody tr').forEach(tr => {
+        if (tr.style.display === 'none') return;
+        const cells = Array.from(tr.cells).map(td => td.innerText.trim());
+        rows.push(cells);
+      });
+      return { headers, rows };
+    }
+
+    // Server-backed visible exports: POST visible rows to server to generate PDF/XLSX
+    const serverExportPdfBtn = document.getElementById('serverExportPdfBtn');
+    if (serverExportPdfBtn) {
+      serverExportPdfBtn.addEventListener('click', async function(e){
+        e.preventDefault();
+        const { headers, rows: rawRows } = getVisibleTableData();
+        // clone rows before mutating
+        const rows = rawRows.slice();
+        // if the user requested sorting by event for the downloaded file, sort client-side by the Event column
+        try {
+          const sortByEvent = document.getElementById('downloadSortByEvent')?.checked;
+          if (sortByEvent) {
+            const idx = headers.findIndex(h => /event/i.test(h));
+            if (idx >= 0) {
+              rows.sort((a,b) => ((a[idx]||'').toString().toLowerCase()).localeCompare((b[idx]||'').toString().toLowerCase()));
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to sort rows before PDF export', err);
+        }
+        try {
+          const resp = await fetch('/export_visible_pdf', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ headers: headers, rows: rows, title: 'Participants' })
+          });
+          if (!resp.ok) { alert('Failed to generate PDF'); return; }
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+            // determine filename according to selected filters
+            const filenameBase = (function(){
+              // get department and event values from the page (hidden inputs / selects)
+              // deptSelect contains dept id; try to get the dept name from the selected option if available
+              const deptSelect = document.getElementById('deptSelect');
+              let deptName = '';
+              if (deptSelect) {
+                const opt = deptSelect.options[deptSelect.selectedIndex];
+                if (opt && opt.value) deptName = opt.text.trim();
+              }
+              // event select might be in the form with name event_id; find it by name
+              let eventName = '';
+              const eventSelect = document.querySelector('select[name="event_id"]');
+              if (eventSelect) {
+                const opt = eventSelect.options[eventSelect.selectedIndex];
+                if (opt && opt.value) eventName = opt.text.trim();
+              }
+
+              // apply rules: none -> allparticipants, dept only -> dept, event only -> event, both -> dept_event
+              if (!deptName && !eventName) return 'allparticipants';
+              if (deptName && !eventName) return deptName;
+              if (!deptName && eventName) return eventName;
+              return deptName + '_' + eventName;
+            })();
+
+            // sanitize filename: replace spaces with underscores, remove dangerous chars
+            const sanitize = s => s.replace(/\s+/g, '_').replace(/[^A-Za-z0-9_\-\.]/g, '');
+            const fname = sanitize(filenameBase) + '.pdf';
+            const a = document.createElement('a'); a.href = url; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        } catch(err) { alert('Error exporting PDF: '+err.message); }
+      });
+    }
+
+    const serverExportXlsxBtn = document.getElementById('serverExportXlsxBtn');
+    if (serverExportXlsxBtn) {
+      serverExportXlsxBtn.addEventListener('click', async function(e){
+        e.preventDefault();
+        const { headers, rows: rawRows } = getVisibleTableData();
+        const rows = rawRows.slice();
+        try {
+          const sortByEvent = document.getElementById('downloadSortByEvent')?.checked;
+          if (sortByEvent) {
+            const idx = headers.findIndex(h => /event/i.test(h));
+            if (idx >= 0) {
+              rows.sort((a,b) => ((a[idx]||'').toString().toLowerCase()).localeCompare((b[idx]||'').toString().toLowerCase()));
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to sort rows before XLSX export', err);
+        }
+        try {
+          const resp = await fetch('/export_visible_xlsx', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ headers: headers, rows: rows, title: 'Participants' })
+          });
+          if (!resp.ok) { alert('Failed to generate XLSX'); return; }
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          // determine filename according to selected filters (same logic as PDF)
+          const filenameBase = (function(){
+            const deptSelect = document.getElementById('deptSelect');
+            let deptName = '';
+            if (deptSelect) {
+              const opt = deptSelect.options[deptSelect.selectedIndex];
+              if (opt && opt.value) deptName = opt.text.trim();
+            }
+            let eventName = '';
+            const eventSelect = document.querySelector('select[name="event_id"]');
+            if (eventSelect) {
+              const opt = eventSelect.options[eventSelect.selectedIndex];
+              if (opt && opt.value) eventName = opt.text.trim();
+            }
+            if (!deptName && !eventName) return 'allparticipants';
+            if (deptName && !eventName) return deptName;
+            if (!deptName && eventName) return eventName;
+            return deptName + '_' + eventName;
+          })();
+          const sanitize = s => s.replace(/\s+/g, '_').replace(/[^A-Za-z0-9_\-\.]/g, '');
+          const fname = sanitize(filenameBase) + '.xlsx';
+          const a = document.createElement('a'); a.href = url; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        } catch(err) { alert('Error exporting XLSX: '+err.message); }
       });
     }
   </script>

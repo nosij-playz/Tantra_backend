@@ -5,17 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Add Department - Premium Admin</title>
     <link rel="stylesheet" href="/static/css/admin.css" />
+    <link rel="icon" href="{{ url_for('static', filename='logos/log.png') }}" type="image/png">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   </head>
   <body>
     <div class="container floating">
       <div class="header">
         <div class="brand">
-          <div class="logo pulse"><i class="fas fa-building"></i></div>
-          <div>
-            <h1>Add Department</h1>
-            <div class="small">Create a new department with custom branding</div>
+<img src="{{ url_for('static', filename='logos/log.png') }}" alt="Logo" style="width: 40px; height: 40px;">          <div>
+            <h1>Add department</h1>
+            
           </div>
+        </div>
         </div>
         <div class="controls">
           <a href="/index" class="btn btn-ghost"><i class="fas fa-arrow-left"></i> Dashboard</a>

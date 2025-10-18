@@ -109,6 +109,27 @@ def _get_branch(obj: dict) -> str:
         return ''
     return (obj.get('branch/Class') or obj.get('branch') or obj.get('Class') or obj.get('branch_name') or '')
 
+
+def _normalize_status(val) -> str:
+    """Normalize a status value from the database or incoming form to a string 'open' or 'close'.
+
+    Handles numeric (1/0 or '1'/'0'), legacy values 'open'/'closed' and returns 'open' by default.
+    """
+    if val is None:
+        return 'open'
+    try:
+        # numeric-like
+        if isinstance(val, int):
+            return 'open' if val == 1 else 'close'
+        s = str(val).strip().lower()
+        if s in ('1', 'open', 'opened', 'true', 'yes'):
+            return 'open'
+        if s in ('0', 'close', 'closed', 'false', 'no'):
+            return 'close'
+    except Exception:
+        pass
+    return 'open'
+
 # -------------------- Upload folders --------------------
 UPLOAD_QR_FOLDER = 'static/qr'
 UPLOAD_EVENT_FOLDER = 'static/event_images'
@@ -343,7 +364,7 @@ def department_dashboard():
             ev_dept = ev.get('department') or ev.get('dept_id') or ''
             if ev_dept == department_id:
                 ev_name = ev.get('name') or ''
-                ev_status = ev.get('status', None)
+                ev_status = _normalize_status(ev.get('status'))
                 ev_count = event_counts.get(ev_name, 0)
                 events_info.append({'id': edoc.id, 'name': ev_name, 'status': ev_status, 'participant_count': ev_count})
     except Exception:
@@ -354,9 +375,7 @@ def department_dashboard():
         if any(e['name'] == ename for e in events_info):
             continue
         if ename:
-            events_info.append({'id': '', 'name': ename, 'status': None, 'participant_count': cnt})
-
-    # Sort events_info by name
+            events_info.append({'id': '', 'name': ename, 'status': None, 'participant_count': cnt})    # Sort events_info by name
     events_info = sorted(events_info, key=lambda e: (e.get('name') or '').lower())
 
     return render_template('fordepartement.html', username=username, department_id=department_id,
@@ -417,7 +436,7 @@ def index():
             # show the department name when known, otherwise show the raw dept id
             'dept_name': dept_map.get(did, (did or '')),
             'date': ed.get('date'),
-            'status': ed.get('status', 1),
+            'status': _normalize_status(ed.get('status')),
             # participant count (match by event name)
             'participant_count': event_counts_map.get(ed.get('name') or '', 0)
         })
@@ -455,7 +474,7 @@ def dept_events(dept_id):
             'id': e.id,
             'name': ed.get('name'),
             'date': ed.get('date'),
-            'status': ed.get('status', 1),
+            'status': _normalize_status(ed.get('status')),
             'image_url': ed.get('image_url', ''),
             'venue': ed.get('venue', ''),
             'department': ed.get('department', '')
@@ -480,8 +499,8 @@ def get_event(event_id):
         'time': ed.get('time', ''),
         'venue': ed.get('venue', ''),
         'image_url': ed.get('image_url', ''),
-        'status': ed.get('status', 1),
-        'department': ed.get('department', ''),
+    'department': ed.get('department', ''),
+    'status': _normalize_status(ed.get('status')),
         'price': ed.get('price', ''),
         'prize': ed.get('prize', '')
     }
@@ -560,11 +579,8 @@ def add_event():
         dept_doc = db.collection('departments').document(dept_id).get() if dept_id else None
             # No payment_qr_url needed
 
-        # status: 1=open, 0=closed
-        try:
-            status = int(request.form.get('status', '1'))
-        except Exception:
-            status = 1
+        # status: use string 'open' or 'close'. Accept legacy numeric values and normalize.
+        status = _normalize_status(request.form.get('status', 'open'))
 
         price_raw = request.form.get('price', '')
         try:
@@ -611,47 +627,7 @@ def add_event():
     return render_template('add_event.html', departments=dept_list, default_date=default_date)
 
 
-@app.route('/toggle_event_status', methods=['POST'])
-def toggle_event_status():
-    """Toggle event registration status between open (1) and closed (0)."""
-    if 'username' not in session:
-        return jsonify({'error': 'Unauthorized'}), 401
 
-    event_id = request.form.get('event_id')
-    if not event_id:
-        return jsonify({'error': 'Missing event_id'}), 400
-        
-    try:
-        # Get a reference to the event document
-        event_ref = db.collection('events').document(event_id)
-        event_doc = event_ref.get()
-        
-        if not event_doc.exists:
-            return jsonify({'error': 'Event not found'}), 404
-            
-        # Get current data and new status
-        event_data = event_doc.to_dict()
-        current = event_data.get('status', 1)  # Default to 1 (open) if no status
-        new_status = 0 if current == 1 else 1
-        
-        # Update the status in Firestore
-        event_ref.update({'status': new_status})
-        
-        # Return success response with new status
-        return jsonify({
-            'success': True,
-            'message': 'Event status updated',
-            'status': new_status,
-            'is_open': new_status == 1
-        })
-        
-    except Exception as e:
-        # Log the error and return error response
-        print(f"Error toggling event status: {str(e)}")
-        return jsonify({
-            'error': 'Failed to update event status',
-            'details': str(e)
-        }), 500
 
 
 @app.route('/delete_event', methods=['POST'])
@@ -692,6 +668,69 @@ def delete_event():
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/toggle_event_status', methods=['POST'])
+def toggle_event_status():
+    """Toggle event registration status between 'open' and 'close'.
+
+    Expects form-encoded POST with 'event_id'. Requires logged-in session user.
+    Flips string status ('open'->'close' or 'close'->'open') and persists to Firestore.
+    Returns JSON with the new status string and boolean is_open.
+    """
+    if 'username' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    # Accept form-encoded or JSON payloads for event_id and optional status
+    body_json = request.get_json(silent=True) or {}
+    event_id = request.form.get('event_id') or body_json.get('event_id')
+    if not event_id:
+        return jsonify({'error': 'Missing event_id'}), 400
+    # optional explicit status: 'open' or 'close' (or equivalents)
+    requested_status_raw = request.form.get('status') or body_json.get('status')
+    requested_status = _normalize_status(requested_status_raw) if requested_status_raw is not None else None
+
+    try:
+        event_ref = db.collection('events').document(event_id)
+        ev = event_ref.get()
+        if not ev.exists:
+            print(f"toggle_event_status: event {event_id} not found")
+            return jsonify({'error': 'Event not found'}), 404
+
+        data = ev.to_dict() or {}
+        current = _normalize_status(data.get('status'))
+        # If client provided a requested_status, use it; otherwise toggle
+        if requested_status:
+            new_status = requested_status
+        else:
+            new_status = 'close' if current == 'open' else 'open'
+
+        # Use a transaction to avoid race conditions and ensure update occurs
+        try:
+            transaction = db.transaction()
+            @firestore.transactional
+            def _txn_update(tx, ref, ns):
+                snap = ref.get(transaction=tx)
+                if not snap.exists:
+                    raise RuntimeError('Event vanished during transaction')
+                tx.update(ref, {'status': ns})
+
+            # Run transaction
+            _txn_update(transaction, event_ref, new_status)
+        except Exception as txe:
+            # Fallback to single update but log the error
+            print('toggle_event_status: transaction failed:', txe)
+            try:
+                event_ref.update({'status': new_status})
+            except Exception as uex:
+                print('toggle_event_status: update failed:', uex)
+                return jsonify({'error': 'Failed to update event status', 'details': str(uex)}), 500
+
+        return jsonify({'success': True, 'status': new_status, 'is_open': new_status == 'open'})
+
+    except Exception as e:
+        print('Error toggling event status:', e)
+        return jsonify({'error': 'Failed to update event status', 'details': str(e)}), 500
 
 
 def _resolve_participant_from_registration(reg_data: dict) -> Dict:
@@ -1208,6 +1247,121 @@ def export_participants():
         return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
     return Response('Unsupported format. Allowed: xlsx, pdf', status=400)
+
+
+@app.route('/export_visible_pdf', methods=['POST'])
+def export_visible_pdf():
+    """Generate a PDF on the server from posted table data (headers + rows).
+
+    Expects JSON: { headers: [...], rows: [[...], ...], title: 'Optional Title' }
+    Returns: PDF file (application/pdf)
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return Response('Missing JSON body', status=400)
+
+        headers = data.get('headers') or []
+        rows = data.get('rows') or []
+        title = data.get('title') or 'Participants'
+
+        # Build table data for ReportLab
+        try:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.lib import colors
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER
+        except Exception:
+            return Response('reportlab is required to export PDF. Install with `pip install reportlab`', status=500)
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4))
+
+        styles = getSampleStyleSheet()
+        heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], alignment=TA_CENTER, spaceAfter=12)
+        story = [Paragraph(title, heading_style), Spacer(1, 12)]
+
+        table_data = [headers]
+        for r in rows:
+            table_data.append([str(c) if c is not None else '' for c in r])
+
+        tbl = Table(table_data, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7c4dff')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+
+        story.append(tbl)
+        doc.build(story)
+        buf.seek(0)
+        return send_file(buf, as_attachment=True, download_name='participants_visible_server.pdf', mimetype='application/pdf')
+
+    except Exception as e:
+        return str(e), 500
+
+
+@app.route('/export_visible_xlsx', methods=['POST'])
+def export_visible_xlsx():
+    """Generate an XLSX file on the server from posted table data (headers + rows).
+
+    Expects JSON: { headers: [...], rows: [[...], ...], title: 'Optional Title' }
+    Returns: XLSX file
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return Response('Missing JSON body', status=400)
+
+        headers = data.get('headers') or []
+        rows = data.get('rows') or []
+
+        # Build XLSX using openpyxl
+        try:
+            from openpyxl import Workbook
+            from openpyxl.utils import get_column_letter
+            from openpyxl.styles import Font
+        except Exception:
+            return Response('openpyxl is required to export XLSX. Install with `pip install openpyxl`', status=500)
+
+        buf = io.BytesIO()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Participants'
+
+        # Write headers
+        for col_idx, h in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = Font(bold=True)
+
+        # Write rows
+        for r_idx, row in enumerate(rows, start=2):
+            for c_idx, val in enumerate(row, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=val)
+
+        # Auto-adjust column widths
+        for column_cells in ws.columns:
+            max_length = 0
+            column_cells = list(column_cells)
+            for cell in column_cells:
+                try:
+                    if cell.value and len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except Exception:
+                    pass
+            adjusted_width = (max_length + 2)
+            if column_cells:
+                ws.column_dimensions[get_column_letter(column_cells[0].column)].width = adjusted_width
+
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(buf, as_attachment=True, download_name='participants_visible_server.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    except Exception as e:
+        return str(e), 500
 
 # -------------------- View Database Content --------------------
 @app.route('/db_content')

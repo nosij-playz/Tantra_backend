@@ -1,5 +1,5 @@
 department_id,username,password,role
-,admin,admin,admin
+admin,admin,admin,admin
 ai-data-science,ai-data-science,ai-data-science,department
 applied-electronics-instrumentation,applied-electronics-instrumentation,applied-electronics-instrumentation,department
 civil-engineering,civil-engineering,civil-engineering,department

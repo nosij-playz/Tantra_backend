@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Participants List - {{ selected_event or 'All Events' }}</title>
     <link rel="stylesheet" href="/static/css/admin.css" />
+     <link rel="icon" href="{{ url_for('static', filename='logos/log.png') }}" type="image/png">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
       .btn i {
@@ -89,8 +90,7 @@
     <div class="container floating">
       <div class="header">
         <div class="brand">
-          <div class="logo pulse">T</div>
-          <div>
+<img src="{{ url_for('static', filename='logos/log.png') }}" alt="Logo" style="width: 40px; height: 40px;">          <div>
             <h1>Participants</h1>
             <div class="small">{{ selected_event or 'All Events' }}</div>
           </div>
@@ -117,34 +117,34 @@
             </form>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
               {% if selected_event %}
-                <a href="{{ url_for('download_participants', event=selected_event, dept_id=dept_id, format='xlsx') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                <a href="{{ url_for('download_participants', event=selected_event, dept_id=dept_id, format='xlsx') }}" class="btn btn-success" style="flex:1;min-width:120px;">
                   <i class="fas fa-file-excel"></i> Export XLSX
                 </a>
-                <a href="{{ url_for('download_participants', event=selected_event, dept_id=dept_id, format='pdf') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                <a href="{{ url_for('download_participants', event=selected_event, dept_id=dept_id, format='pdf') }}" class="btn btn-danger" style="flex:1;min-width:120px;">
                   <i class="fas fa-file-pdf"></i> Export PDF
                 </a>
               {% elif dept_id %}
                 <!-- Export all events for the selected department -->
-                <a href="{{ url_for('download_participants', dept_id=dept_id, format='xlsx') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                <a href="{{ url_for('download_participants', dept_id=dept_id, format='xlsx') }}" class="btn btn-success" style="flex:1;min-width:120px;">
                   <i class="fas fa-file-excel"></i> Export XLSX
                 </a>
-                <a href="{{ url_for('download_participants', dept_id=dept_id, format='pdf') }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                <a href="{{ url_for('download_participants', dept_id=dept_id, format='pdf') }}" class="btn btn-danger" style="flex:1;min-width:120px;">
                   <i class="fas fa-file-pdf"></i> Export PDF
                 </a>
               {% else %}
                 <!-- No department or event selected: prevent global export -->
-                <a href="#" onclick="alert('Please select a department or an event to export the participants list.');return false;" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                <a href="#" onclick="alert('Please select a department or an event to export the participants list.');return false;" class="btn btn-success" style="flex:1;min-width:120px;">
                   <i class="fas fa-file-excel"></i> Export XLSX
                 </a>
-                <a href="#" onclick="alert('Please select a department or an event to export the participants list.');return false;" class="btn btn-ghost" style="flex:1;min-width:120px;">
+                <a href="#" onclick="alert('Please select a department or an event to export the participants list.');return false;" class="btn btn-danger" style="flex:1;min-width:120px;">
                   <i class="fas fa-file-pdf"></i> Export PDF
                 </a>
               {% endif %}
-              <a href="{{ url_for('participants_list', dept_id=dept_id) }}" class="btn btn-ghost" style="flex:1;min-width:120px;">
+              <a href="{{ url_for('participants_list', dept_id=dept_id) }}" class="btn btn-primary" style="flex:1;min-width:120px;">
                 <i class="fas fa-sync-alt"></i>
                 Reset
               </a>
-              <a href="/department" class="btn btn-ghost" style="flex:1;min-width:120px;">
+              <a href="/department" class="btn btn-primary" style="flex:1;min-width:120px;">
                 <i class="fas fa-arrow-left"></i>
                 Dashboard
               </a>

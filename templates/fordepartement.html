@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Department Dashboard - {{ department_name or department_id }}</title>
     <link rel="stylesheet" href="/static/css/admin.css" />
+  <link rel="icon" href="{{ url_for('static', filename='logos/log.png') }}" type="image/png">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   </head>
   <body>
     <div class="container floating">
       <div class="header">
         <div class="brand">
-          <div class="logo pulse">T</div>
-          <div>
+<img src="{{ url_for('static', filename='logos/log.png') }}" alt="Logo" style="width: 40px; height: 40px;">          <div>
             <h1>{{ department_name or department_id }}</h1>
             <div class="small">Department Dashboard</div>
           </div>
@@ -51,11 +51,22 @@
                   </div>
                   <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
                     <div>
-                      {% if e.status == 1 %}
-                        <span class="badge" style="background:linear-gradient(135deg, var(--success), #00c853);color:#001"><i class="fas fa-check-circle"></i> Open</span>
-                      {% else %}
-                        <span class="badge" style="background:linear-gradient(135deg, var(--danger), #ff2b55);"><i class="fas fa-times-circle"></i> Closed</span>
-                      {% endif %}
+                      <span class="event-status-badge" data-event="{{ e.id }}">
+                        {% if e.status == 'open' %}
+                          <span class="badge" style="background:linear-gradient(135deg, var(--success), #00c853);color:#001"><i class="fas fa-check-circle"></i> Open</span>
+                        {% else %}
+                          <span class="badge" style="background:linear-gradient(135deg, var(--danger), #ff2b55);"><i class="fas fa-times-circle"></i> Closed</span>
+                        {% endif %}
+                      </span>
+                    </div>
+                    <div>
+                      <label style="display:inline-flex;align-items:center;gap:8px">
+                        <select class="event-status-select" data-event="{{ e.id }}">
+                          <option value="open" {{ 'selected' if e.status == 'open' else '' }}>Open</option>
+                          <option value="close" {{ 'selected' if e.status != 'open' else '' }}>Closed</option>
+                        </select>
+                        <span class="small">&nbsp;</span>
+                      </label>
                     </div>
                     <div style="color:var(--muted);font-size:13px">Participants: <strong>{{ e.participant_count }}</strong></div>
                   </div>
@@ -66,5 +77,37 @@
         </div>
       </div>
     </div>
+    <script>
+      // Attach handlers for status select controls
+      document.querySelectorAll('.event-status-select').forEach(sel => {
+        sel.addEventListener('change', function(){
+          const evt = this.dataset.event;
+          const label = this.nextElementSibling;
+          const badgeWrap = document.querySelector('.event-status-badge[data-event="' + evt + '"]');
+          const selVal = this.value;
+          if (label) label.innerText = selVal === 'open' ? 'Open' : 'Closed';
+          if (badgeWrap) badgeWrap.innerHTML = selVal === 'open' ? '<span class="badge" style="background:linear-gradient(135deg, var(--success), #00c853);color:#001"><i class="fas fa-check-circle"></i> Open</span>' : '<span class="badge" style="background:linear-gradient(135deg, var(--danger), #ff2b55);"><i class="fas fa-times-circle"></i> Closed</span>';
+
+          const params = `event_id=${encodeURIComponent(evt)}&status=${encodeURIComponent(selVal)}`;
+          fetch('/toggle_event_status', {
+            method: 'POST',
+            headers: {'Content-Type':'application/x-www-form-urlencoded'},
+            body: params
+          }).then(async res => {
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to set status');
+            const open = data.status === 'open';
+            if (label) label.innerText = open ? 'Open' : 'Closed';
+            if (badgeWrap) badgeWrap.innerHTML = open ? '<span class="badge" style="background:linear-gradient(135deg, var(--success), #00c853);color:#001"><i class="fas fa-check-circle"></i> Open</span>' : '<span class="badge" style="background:linear-gradient(135deg, var(--danger), #ff2b55);"><i class="fas fa-times-circle"></i> Closed</span>';
+            // reflect server state in the select
+            this.value = open ? 'open' : 'close';
+          }).catch(err => {
+            alert(err.message || 'Failed to update event status');
+            // reload to get authoritative state
+            location.reload();
+          });
+        });
+      });
+    </script>
   </body>
 </html>
